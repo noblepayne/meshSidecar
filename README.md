@@ -12,6 +12,7 @@ meshSidecar provides a flexible way to integrate mesh networking capabilities wi
 - Support for multiple mesh networking protocols (Tailscale, NetBird)
 - Minimal configuration required
 - Automatic service discovery within the mesh
+- Custom mesh hostnames per service
 - Secure credential handling via file-based authentication
 
 ## Usage
@@ -26,7 +27,12 @@ services.meshSidecar = {
   outboundInterface = "wlp3s0";
 
   # Wrap existing NixOS/systemd services
-  wrappedServices = ["grafana" "prometheus"];
+  services = {
+    grafana = {
+      meshName = "monitoring-grafana";  # Custom hostname on mesh
+    };
+    prometheus = {};  # Uses service name "prometheus" as hostname
+  };
 };
 ```
 
