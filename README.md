@@ -9,20 +9,22 @@ meshSidecar provides a flexible way to integrate mesh networking capabilities wi
 ## Features
 
 - Seamless integration with existing NixOS services
-- Support for multiple mesh networking protocols
+- Support for multiple mesh networking protocols (Tailscale, NetBird)
 - Minimal configuration required
 - Automatic service discovery within the mesh
+- Secure credential handling via file-based authentication
 
 ## Usage
 
-Add meshSidecar to your NixOS configuration and then:
+Add meshSidecar to your NixOS configuration:
 
 ```nix
 services.meshSidecar = {
   enable = true;
-  provider = "tailscale";
-  authKey = "tskey-auth-fake";
+  provider = "tailscale";  # or "netbird"
+  authKeyFile = "/run/secrets/tailscale-key";
   outboundInterface = "wlp3s0";
+
   # Wrap existing NixOS/systemd services
   wrappedServices = ["grafana" "prometheus"];
 };
