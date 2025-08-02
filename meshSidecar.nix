@@ -55,13 +55,21 @@
     #  default = ["1.1.1.1" "8.8.8.8"];
     #};
 
-    # TODO: switch to attrset interface for config options
-    wrappedServices = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      description = "List of systemd service names to wrap.";
-      default = [];
+    services = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          meshName = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Hostname to use on the mesh network. Defaults to service name.";
+          };
+        };
+      });
+      default = {};
+      description = "Services to wrap with mesh networking";
     };
   };
+
   config = let
     # Grab our module config
     cfg = config.services.meshSidecar;
@@ -81,23 +89,31 @@
     dhcpStart = builtins.elemAt cfg.dhcpRange 0;
     dhcpEnd = builtins.elemAt cfg.dhcpRange 1;
     # TODO: method to support more than two providers cleanly
-    serviceOverrides = lib.genAttrs cfg.wrappedServices (svc: {
-      bindsTo =
-        if cfg.provider == "netbird"
-        then ["netbird@%N.service"]
-        else ["tailscale@%N.service"];
-      after =
-        if cfg.provider == "netbird"
-        then ["netbird@%N.service"]
-        else ["tailscale@%N.service"];
-      unitConfig.JoinsNamespaceOf =
-        if cfg.provider == "netbird"
-        then "netbird@%N.service"
-        else "tailscale@%N.service";
-      # doesn't change based on mesh provider
-      serviceConfig.PrivateNetwork = true;
-      serviceConfig.BindPaths = ["/etc/netns/%N/resolv.conf:/etc/resolv.conf"];
-    });
+    serviceOverrides =
+      lib.mapAttrs (serviceName: serviceConfig: {
+        bindsTo =
+          if cfg.provider == "netbird"
+          then ["netbird@%N.service"]
+          else ["tailscale@%N.service"];
+        after =
+          if cfg.provider == "netbird"
+          then ["netbird@%N.service"]
+          else ["tailscale@%N.service"];
+        unitConfig.JoinsNamespaceOf =
+          if cfg.provider == "netbird"
+          then "netbird@%N.service"
+          else "tailscale@%N.service";
+        # doesn't change based on mesh provider
+        serviceConfig.PrivateNetwork = true;
+        serviceConfig.BindPaths = ["/etc/netns/%N/resolv.conf:/etc/resolv.conf"];
+      })
+      cfg.services;
+    meshNameMap = lib.mapAttrs (k: v:
+      if v.meshName != null
+      then v.meshName
+      else k)
+    cfg.services;
+    meshNameMapJSON = builtins.toJSON meshNameMap;
     moduleServices = {
       "systemdbridge" = {
         before = ["network.target"];
@@ -212,7 +228,8 @@
           LoadCredential = "auth-key:${cfg.authKeyFile}";
           ExecStart = "${writeDash "netbird-up" ''
             set -x
-            ${pkgs.netbird}/bin/netbird up --foreground-mode --hostname "$1" --setup-key-file "$CREDENTIALS_DIRECTORY/auth-key" --allow-server-ssh
+            MESH_NAME=$(echo '${meshNameMapJSON}' | ${pkgs.jq}/bin/jq -r --arg service "$1" '.[$service] // $service')
+            ${pkgs.netbird}/bin/netbird up --foreground-mode --hostname "$MESH_NAME" --setup-key-file "$CREDENTIALS_DIRECTORY/auth-key" --allow-server-ssh
           ''} %i";
           NoNewPrivileges = true;
           #PrivateUsers=true;  # Needs to be root for network stuff, but can we grant these privs another way?
@@ -259,9 +276,10 @@
           LoadCredential = "auth-key:${cfg.authKeyFile}";
           ExecStart = "${writeDash "tailscale-up" ''
             set -x
+            MESH_NAME=$(echo '${meshNameMapJSON}' | ${pkgs.jq}/bin/jq -r --arg service "$1" '.[$service] // $service')
             # ${pkgs.tailscale}/bin/tailscaled -state 'mem:' &
             ${pkgs.tailscale}/bin/tailscaled -statedir "$STATE_DIRECTORY" -socket "$RUNTIME_DIRECTORY/tailscaled.sock" &
-            ${pkgs.tailscale}/bin/tailscale -socket "$RUNTIME_DIRECTORY/tailscaled.sock" up --ssh --accept-dns=true --hostname="$1" --authkey="file:$CREDENTIALS_DIRECTORY/auth-key"
+            ${pkgs.tailscale}/bin/tailscale -socket "$RUNTIME_DIRECTORY/tailscaled.sock" up --ssh --accept-dns=true --hostname="$MESH_NAME" --authkey="file:$CREDENTIALS_DIRECTORY/auth-key"
           ''} %i";
           NoNewPrivileges = true;
           # PrivateUsers = true; # Needs to be root for network stuff, but can we grant these privs another way?
