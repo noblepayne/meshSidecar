@@ -8,18 +8,16 @@
   options.services.meshSidecar = {
     enable = lib.mkEnableOption "meshSidecar module";
 
-    # TODO: validate in allowed set of known providers
     provider = lib.mkOption {
-      type = lib.types.str;
+      type = lib.types.enum ["tailscale" "netbird"];
       description = ''Mesh network service provider e.g. currently "tailscale" or "netbird".'';
       default = "tailscale";
     };
 
     # TODO: support providing multiple, tied to service. support multiple mesh providers at once?
-    # TODO: authKeyFile to avoid baking keys into scripts or service configs
-    authKey = lib.mkOption {
-      type = lib.types.str;
-      description = "Authentication key string.";
+    authKeyFile = lib.mkOption {
+      type = lib.types.path;
+      description = "Path to key file for mesh provider auth.";
     };
 
     outboundInterface = lib.mkOption {
@@ -109,7 +107,7 @@
           PrivateMounts = true;
           ProtectSystem = "strict";
           RuntimeDirectory = "systemdbridge";
-          # TODO: document why this is needed
+          # N.B. udhcpd writes it's lease file to /var/lib/misc
           BindPaths = "/run/systemdbridge:/var/lib/misc";
           ExecStop = "${ip} link del br0";
           # TODO: configurable outbound interface or autodiscovery?
@@ -211,9 +209,10 @@
         serviceConfig = {
           Type = "simple";
           RemainAfterExit = true;
+          LoadCredential = "auth-key:${cfg.authKeyFile}";
           ExecStart = "${writeDash "netbird-up" ''
             set -x
-            ${pkgs.netbird}/bin/netbird up -F -n $1 -k ${cfg.authKey} --allow-server-ssh
+            ${pkgs.netbird}/bin/netbird up --foreground-mode --hostname "$1" --setup-key-file "$CREDENTIALS_DIRECTORY/auth-key" --allow-server-ssh
           ''} %i";
           NoNewPrivileges = true;
           #PrivateUsers=true;  # Needs to be root for network stuff, but can we grant these privs another way?
@@ -257,11 +256,12 @@
         serviceConfig = {
           Type = "simple";
           RemainAfterExit = true;
+          LoadCredential = "auth-key:${cfg.authKeyFile}";
           ExecStart = "${writeDash "tailscale-up" ''
             set -x
             # ${pkgs.tailscale}/bin/tailscaled -state 'mem:' &
             ${pkgs.tailscale}/bin/tailscaled -statedir "$STATE_DIRECTORY" -socket "$RUNTIME_DIRECTORY/tailscaled.sock" &
-            ${pkgs.tailscale}/bin/tailscale -socket "$RUNTIME_DIRECTORY/tailscaled.sock" up --ssh --accept-dns=true --hostname=$1 --authkey="${cfg.authKey}"
+            ${pkgs.tailscale}/bin/tailscale -socket "$RUNTIME_DIRECTORY/tailscaled.sock" up --ssh --accept-dns=true --hostname="$1" --authkey="file:$CREDENTIALS_DIRECTORY/auth-key"
           ''} %i";
           NoNewPrivileges = true;
           # PrivateUsers = true; # Needs to be root for network stuff, but can we grant these privs another way?
