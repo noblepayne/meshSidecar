@@ -26,9 +26,12 @@
     };
 
     bridgeName = lib.mkOption {
-      type = lib.types.str;
+      type = lib.types.addCheck lib.types.str (
+        name:
+          builtins.stringLength name <= 15 && name != ""
+      );
       description = "Name of the bridge interface.";
-      default = "br0";
+      default = "meshBridge";
     };
 
     bridgeCidr = lib.mkOption {
@@ -125,20 +128,20 @@
           RuntimeDirectory = "systemdbridge";
           # N.B. udhcpd writes it's lease file to /var/lib/misc
           BindPaths = "/run/systemdbridge:/var/lib/misc";
-          ExecStop = "${ip} link del br0";
+          ExecStop = "${ip} link del ${cfg.bridgeName}";
           # TODO: configurable outbound interface or autodiscovery?
           ExecStart = "${
             writeDash "${cfg.bridgeName}-up" ''
               set -x
               # TODO: export needed?
               export PATH=${pkgs.busybox}/bin
-              ${ip} link add br0 type bridge
+              ${ip} link add ${cfg.bridgeName} type bridge
               ${ip} addr add ${cfg.bridgeCidr} dev ${cfg.bridgeName}
               ${ip} link set ${cfg.bridgeName} up
               ${iptables} -t nat -A POSTROUTING -o ${cfg.outboundInterface} -j MASQUERADE
               ${iptables} -A FORWARD -i ${cfg.bridgeName} -o ${cfg.outboundInterface} -j ACCEPT
               ${iptables} -A FORWARD -i ${cfg.outboundInterface} -o ${cfg.bridgeName} -m state --state RELATED,ESTABLISHED -j ACCEPT
-              #${udhcpd} -f ${writeText "udhcpd-cfg" "interface br0\nstart 192.168.222.3\nend 192.168.222.103\noption router 192.168.222.2\noption dns 1.1.1.1\n"}
+              #${udhcpd} -f ${writeText "udhcpd-cfg" "interface ${cfg.bridgeName}\nstart 192.168.222.3\nend 192.168.222.103\noption router 192.168.222.2\noption dns 1.1.1.1\n"}
               ${udhcpd} -f ${writeText "udhcpd-cfg" "interface ${cfg.bridgeName}\nstart ${dhcpStart}\nend ${dhcpEnd}\noption router ${dhcpRouter}\n"}
             ''
           }";
