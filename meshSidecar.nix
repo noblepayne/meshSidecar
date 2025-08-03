@@ -180,42 +180,45 @@
           ExecStart = "${
             writeDash "netns-up" (''
                 set -x
-                ${ip} netns add $1
-                ${umount} /var/run/netns/$1
-                ${mount} --bind /proc/self/ns/net /var/run/netns/$1
-                ${ip} link add $1 type veth peer name eth0
+                # Linux interface name max is 15 char
+                VETH_NAME=$(printf "%.15s" "$1")
+                ${ip} netns add "$1"
+                ${umount} "/var/run/netns/$1"
+                ${mount} --bind /proc/self/ns/net "/var/run/netns/$1"
+                ${ip} link add "$VETH_NAME" type veth peer name eth0
                 ${ip} link set eth0 up
-                ${ip} link set netns default dev $1
-                ${ip} netns exec default ${ip} link set $1 master br0
-                ${ip} netns exec default ${ip} link set br0 up
-                ${ip} netns exec default ${ip} link set $1 up
+                ${ip} link set netns default dev "$VETH_NAME"
+                ${ip} netns exec default ${ip} link set "$VETH_NAME" master ${cfg.bridgeName}
+                ${ip} netns exec default ${ip} link set ${cfg.bridgeName} up
+                ${ip} netns exec default ${ip} link set "$VETH_NAME" up
 
-                #${ip} netns exec default cat /etc/nsswitch.conf > /etc/netns/$1/nsswitch.conf
-                #echo 'hosts: dns' > /etc/netns/$1/nsswitch.conf
+                #${ip} netns exec default cat /etc/nsswitch.conf > "/etc/netns/$1/nsswitch.conf"
+                #echo 'hosts: dns' > "/etc/netns/$1/nsswitch.conf"
 
-                touch /etc/netns/$1/resolv.conf
-                ${ip} netns exec $1 ${udhcpc} -q -i eth0
+                touch "/etc/netns/$1/resolv.conf"
+                ${ip} netns exec "$1" ${udhcpc} -q -i eth0
                 # TODO: patch udhcpc to only overwrite when dns option is present
                 # until then, we just overwrite after it runs
                 # TODO: needs magic dns if we want tailscale to manage, if non-empty.
                 # leaving empty for now as this does not break tailscale
-                #${ip} netns exec default cat /etc/resolv.conf > /etc/netns/$1/resolv.conf
-                #cat /etc/netns/$1/resolv.conf
+                #${ip} netns exec default cat /etc/resolv.conf > "/etc/netns/$1/resolv.conf"
+                #cat "/etc/netns/$1/resolv.conf"
               ''
               + (
                 if cfg.provider == "netbird"
-                then "\n${ip} netns exec default cat /etc/resolv.conf > /etc/netns/$1/resolv.conf\n"
+                then "\n${ip} netns exec default cat /etc/resolv.conf > /etc/netns/\"$1\"/resolv.conf\n"
                 else ""
               ))
           } %i";
           ExecStop = "${
             writeDash "netns-down" ''
-              ${ip} netns exec default ${ip} link del $1
-              ${ip} netns del $1
-              rm -rf /etc/netns/$1
+              # Linux interface name max is 15 char
+              VETH_NAME=$(printf "%.15s" "$1")
+              ${ip} netns exec default ${ip} link del "$VETH_NAME"
+              ${ip} netns del "$1"
+              rm -rf "/etc/netns/$1"
             ''
           } %i";
-          # TODO: delete veths?
         };
       };
 
