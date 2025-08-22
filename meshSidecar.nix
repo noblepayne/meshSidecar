@@ -128,7 +128,6 @@
           RuntimeDirectory = "systemdbridge";
           # N.B. udhcpd writes it's lease file to /var/lib/misc
           BindPaths = "/run/systemdbridge:/var/lib/misc";
-          ExecStop = "${ip} link del ${cfg.bridgeName}";
           # TODO: configurable outbound interface or autodiscovery?
           ExecStart = "${
             writeDash "${cfg.bridgeName}-up" ''
@@ -138,11 +137,33 @@
               ${ip} link add ${cfg.bridgeName} type bridge
               ${ip} addr add ${cfg.bridgeCidr} dev ${cfg.bridgeName}
               ${ip} link set ${cfg.bridgeName} up
+              # Enable NAT
+              # TODO: add -s (e.g. 192.168.222.0/24, may need cfg changes for how we pass this info)
               ${iptables} -t nat -A POSTROUTING -o ${cfg.outboundInterface} -j MASQUERADE
+              # Allow outbound traffic from our bridge and private services
               ${iptables} -A FORWARD -i ${cfg.bridgeName} -o ${cfg.outboundInterface} -j ACCEPT
+              # Allow return traffic
               ${iptables} -A FORWARD -i ${cfg.outboundInterface} -o ${cfg.bridgeName} -m state --state RELATED,ESTABLISHED -j ACCEPT
-              #${udhcpd} -f ${writeText "udhcpd-cfg" "interface ${cfg.bridgeName}\nstart 192.168.222.3\nend 192.168.222.103\noption router 192.168.222.2\noption dns 1.1.1.1\n"}
+              ${iptables} -A FORWARD -i ${cfg.outboundInterface} -o ${cfg.bridgeName} -j DROP
+              # Allow DHCP (N.B. -I for accept to handle nixos-fw being active)
+              ${iptables} -I INPUT -i ${cfg.bridgeName} -p udp --dport 67 -j ACCEPT
+              ${iptables} -A INPUT -i ${cfg.bridgeName} -j DROP
+              #${udhcpd} -f ${writeText "udhcpd-cfg" "interface ${cfg.bridgeName}\nstart ${dhcpStart}\nend ${dhcpEnd}\noption router ${dhcpRouter}\noption dns 1.1.1.1\n"}
               ${udhcpd} -f ${writeText "udhcpd-cfg" "interface ${cfg.bridgeName}\nstart ${dhcpStart}\nend ${dhcpEnd}\noption router ${dhcpRouter}\n"}
+            ''
+          }";
+          ExecStop = "${
+            writeDash "${cfg.bridgeName}-down" ''
+              set -x
+              # Delete bridge
+              ${ip} link del ${cfg.bridgeName}
+              # Cleanup leftover iptables rules
+              ${iptables} -t nat -D POSTROUTING -o ${cfg.outboundInterface} -j MASQUERADE
+              ${iptables} -D FORWARD -i ${cfg.bridgeName} -o ${cfg.outboundInterface} -j ACCEPT
+              ${iptables} -D FORWARD -i ${cfg.outboundInterface} -o ${cfg.bridgeName} -m state --state RELATED,ESTABLISHED -j ACCEPT
+              ${iptables} -D FORWARD -i ${cfg.outboundInterface} -o ${cfg.bridgeName} -j DROP
+              ${iptables} -D INPUT -i ${cfg.bridgeName} -p udp --dport 67 -j ACCEPT
+              ${iptables} -D INPUT -i ${cfg.bridgeName} -j DROP
             ''
           }";
         };
@@ -327,6 +348,7 @@
     };
   in
     lib.mkIf cfg.enable {
+      boot.kernel.sysctl."net.ipv4.ip_forward" = true;
       systemd.services = moduleServices // serviceOverrides;
     };
 }
