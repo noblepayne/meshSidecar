@@ -217,7 +217,7 @@
                 #echo 'hosts: dns' > "/etc/netns/$1/nsswitch.conf"
 
                 touch "/etc/netns/$1/resolv.conf"
-                ${ip} netns exec "$1" ${udhcpc} -q -i eth0
+                ${ip} netns exec "$1" ${udhcpc} -f -q -n -t 3 -T 3 -i eth0
                 # TODO: patch udhcpc to only overwrite when dns option is present
                 # until then, we just overwrite after it runs
                 # TODO: needs magic dns if we want tailscale to manage, if non-empty.
