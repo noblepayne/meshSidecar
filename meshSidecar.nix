@@ -71,6 +71,16 @@
       default = {};
       description = "Services to wrap with mesh networking";
     };
+
+    knownServiceOverrides = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          paperless.enable = lib.mkEnableOption "Apply paperless-specific overrides";
+        };
+      };
+      default = {};
+      description = "Enable known service integration overrides";
+    };
   };
 
   config = let
@@ -186,11 +196,25 @@
         };
       };
 
+      "netns-publisher" = {
+        description = "netns publisher via socket";
+        after = ["netns-publisher.socket"];
+        requires = ["netns-publisher.socket"];
+        serviceConfig = {
+          ExecStart = writeDash "netns-publisher-up" "${pkgs.python313}/bin/python3 -u ${./netns-publisher.py}";
+          StandardInput = "socket"; # systemd passed FD 0
+          StandardOutput = "journal";
+          StandardError = "journal";
+          Restart = "always";
+        };
+      };
+
       "netns@" = {
         description = "%i network namespace";
         partOf = ["netbird@%i.service" "tailscale@%i.service"];
         bindsTo = ["systemdbridge.service" "defaultnetns.service"];
-        after = ["defaultnetns.service"];
+        after = ["defaultnetns.service" "netns-publisher.service"];
+        wants = ["netns-publisher.service"];
         before = ["network.target"];
         serviceConfig = {
           Type = "oneshot";
@@ -198,14 +222,18 @@
           PrivateNetwork = true;
           ConfigurationDirectory = "netns/%i";
           PrivateMounts = false; # TODO...
+          # TODO: make per-service configurable
+          PrivateTmp = true;
           ExecStart = "${
             writeDash "netns-up" (''
                 set -x
                 # Linux interface name max is 15 char
                 VETH_NAME=$(printf "%.15s" "$1")
-                ${ip} netns add "$1"
-                ${umount} "/var/run/netns/$1"
-                ${mount} --bind /proc/self/ns/net "/var/run/netns/$1"
+                #${ip} netns add "$1"
+                #${umount} "/var/run/netns/$1"
+                #${mount} --bind /proc/self/ns/net "/var/run/netns/$1"
+                # publish netns
+                ${pkgs.python313}/bin/python3 ${./send-netns.py} "$1" A
                 ${ip} link add "$VETH_NAME" type veth peer name eth0
                 ${ip} link set eth0 up
                 ${ip} link set netns default dev "$VETH_NAME"
@@ -231,13 +259,18 @@
                 else ""
               ))
           } %i";
-          ExecStop = "${
+          ExecStopPost = "${
             writeDash "netns-down" ''
+              set +x
               # Linux interface name max is 15 char
               VETH_NAME=$(printf "%.15s" "$1")
               ${ip} netns exec default ${ip} link del "$VETH_NAME"
-              ${ip} netns del "$1"
-              rm -rf "/etc/netns/$1"
+              # TODO: can't work with PrivateTmp
+              #${umount} "/var/run/netns/$1"
+              #${ip} netns del "$1"
+              # TODO: add RM!
+              #rm -rf "/etc/netns/$1"
+              ${pkgs.python313}/bin/python3 ${./send-netns.py} "$1" D
             ''
           } %i";
         };
@@ -347,8 +380,34 @@
       };
     };
   in
-    lib.mkIf cfg.enable {
-      boot.kernel.sysctl."net.ipv4.ip_forward" = true;
-      systemd.services = moduleServices // serviceOverrides;
-    };
+    lib.mkMerge [
+      (lib.mkIf cfg.enable {
+        boot.kernel.sysctl."net.ipv4.ip_forward" = true;
+        systemd.sockets.netns-publisher = {
+          description = "netns publisher socket";
+          wantedBy = ["sockets.target"];
+          socketConfig = {
+            ListenStream = "/var/run/netns-publisher.sock";
+            SocketMode = "0600";
+            Accept = false;
+          };
+        };
+        systemd.services = moduleServices // serviceOverrides;
+      })
+      # Overrides
+      # paperless
+      (lib.mkIf (cfg.enable && cfg.knownServiceOverrides.paperless.enable && config.services.paperless.enable) {
+        systemd.services = {
+          # TODO: cleanup
+          "paperless-web" = {
+            serviceConfig.PrivateNetwork = lib.mkForce true;
+            unitConfig.JoinsNamespaceOf = lib.mkForce "netns@paperless-web.service";
+          };
+          "paperless-task-queue" = {
+            serviceConfig.PrivateNetwork = lib.mkForce true;
+            unitConfig.JoinsNamespaceOf = lib.mkForce "netns@paperless-web.service";
+          };
+        };
+      })
+    ];
 }
