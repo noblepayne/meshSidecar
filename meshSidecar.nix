@@ -71,6 +71,16 @@
       default = {};
       description = "Services to wrap with mesh networking";
     };
+
+    knownServiceOverrides = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          paperless.enable = lib.mkEnableOption "Apply paperless-specific overrides";
+        };
+      };
+      default = {};
+      description = "Enable known service integration overrides";
+    };
   };
 
   config = let
@@ -198,14 +208,18 @@
           PrivateNetwork = true;
           ConfigurationDirectory = "netns/%i";
           PrivateMounts = false; # TODO...
+          # TODO: make per-service configurable
+          PrivateTmp = true;
           ExecStart = "${
             writeDash "netns-up" (''
                 set -x
                 # Linux interface name max is 15 char
                 VETH_NAME=$(printf "%.15s" "$1")
-                ${ip} netns add "$1"
-                ${umount} "/var/run/netns/$1"
-                ${mount} --bind /proc/self/ns/net "/var/run/netns/$1"
+                #${ip} netns add "$1"
+                #${umount} "/var/run/netns/$1"
+                mkdir -p /run/meshSidecar_netns
+                touch "/run/meshSidecar_netns/$1"
+                ${mount} --bind /proc/self/ns/net "/run/meshSidecar_netns/$1"
                 ${ip} link add "$VETH_NAME" type veth peer name eth0
                 ${ip} link set eth0 up
                 ${ip} link set netns default dev "$VETH_NAME"
@@ -217,7 +231,10 @@
                 #echo 'hosts: dns' > "/etc/netns/$1/nsswitch.conf"
 
                 touch "/etc/netns/$1/resolv.conf"
-                ${ip} netns exec "$1" ${udhcpc} -f -q -n -t 3 -T 3 -i eth0
+                # TODO: to replace ip netns exec
+                mount --bind "/etc/netns/$1/resolv.conf" /etc/resolv.conf
+                #${ip} netns exec "$1" ${udhcpc} -f -q -n -t 3 -T 3 -i eth0
+                ${udhcpc} -f -q -n -t 3 -T 3 -i eth0
                 # TODO: patch udhcpc to only overwrite when dns option is present
                 # until then, we just overwrite after it runs
                 # TODO: needs magic dns if we want tailscale to manage, if non-empty.
@@ -231,13 +248,19 @@
                 else ""
               ))
           } %i";
-          ExecStop = "${
+          ExecStopPost = "${
             writeDash "netns-down" ''
+              set -x
               # Linux interface name max is 15 char
               VETH_NAME=$(printf "%.15s" "$1")
               ${ip} netns exec default ${ip} link del "$VETH_NAME"
-              ${ip} netns del "$1"
-              rm -rf "/etc/netns/$1"
+              ${umount} "/run/meshSidecar_netns/$1"
+              rm "/run/meshSidecar_netns/$1"
+              #${ip} netns del "$1"
+
+              umount /etc/resolv.conf
+              # TODO: we can't clean this up easily w/ private mounts. do we care?
+              rm -r "/etc/netns/$1" || true
             ''
           } %i";
         };
@@ -262,6 +285,7 @@
           #PrivateUsers=true;  # Needs to be root for network stuff, but can we grant these privs another way?
           PrivateNetwork = true;
           PrivateMounts = true;
+          PrivateTmp = true;
           ProtectHome = true;
           PrivateDevices = true;
           # netbird does routing things?
@@ -312,6 +336,7 @@
           # PrivateUsers = true; # Needs to be root for network stuff, but can we grant these privs another way?
           PrivateNetwork = true;
           PrivateMounts = true;
+          PrivateTmp = true;
           ProtectHome = true;
           PrivateDevices = false; #true
           # tailscale does routing things?
@@ -347,8 +372,36 @@
       };
     };
   in
-    lib.mkIf cfg.enable {
-      boot.kernel.sysctl."net.ipv4.ip_forward" = true;
-      systemd.services = moduleServices // serviceOverrides;
-    };
+    lib.mkMerge [
+      (lib.mkIf cfg.enable {
+        boot.kernel.sysctl."net.ipv4.ip_forward" = true;
+        systemd.services = moduleServices // serviceOverrides;
+      })
+      # Overrides
+      # paperless
+      (lib.mkIf (cfg.enable && cfg.knownServiceOverrides.paperless.enable && config.services.paperless.enable) {
+        systemd.services = {
+          # task-queue is base namespaced joined by other paperless services
+          "paperless-task-queue" = {
+            # we require private network
+            serviceConfig.PrivateNetwork = lib.mkForce true;
+            # TODO: Could add to all services if we want full mesh participation
+            # TODO: make this easy but w/ only one mesh vpn per pod?
+            serviceConfig.BindPaths = ["/etc/netns/paperless-web/resolv.conf:/etc/resolv.conf"];
+
+            # wait until our base namespace is configured
+            after = lib.mkAfter ["netns@paperless-web.service"];
+            # force all paperless services using task-queue's namespace to use ours
+            unitConfig.JoinsNamespaceOf = lib.mkForce "netns@paperless-web.service";
+          };
+          # override paperless-web values to clear conflicts.
+          "paperless-web" = {
+            # we require private network
+            serviceConfig.PrivateNetwork = lib.mkForce true;
+            # this could be our netns or task-queue now that they are the same
+            unitConfig.JoinsNamespaceOf = lib.mkForce "paperless-task-queue.service";
+          };
+        };
+      })
+    ];
 }

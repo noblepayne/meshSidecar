@@ -14,10 +14,13 @@ meshSidecar provides a flexible way to integrate mesh networking capabilities wi
 - Automatic service discovery within the mesh
 - Custom mesh hostnames per service
 - Secure credential handling via file-based authentication
+- Optional service-specific overrides via `knownServiceOverrides`
 
 ## Usage
 
 Add meshSidecar to your NixOS configuration:
+
+- ⚠️ Note: Currently, users must explicitly list the systemd units to wrap. `knownServiceOverrides` provides a hook for service-specific tweaks (like Paperless), but does not automatically wrap all units in a stack.
 
 ```nix
 services.meshSidecar = {
@@ -33,6 +36,11 @@ services.meshSidecar = {
     };
     prometheus = {};  # Uses service name "prometheus" as hostname
   };
+
+  # Enable service-specific overrides
+  knownServiceOverrides = {
+    paperless.enable = true;
+  };
 };
 ```
 
@@ -42,11 +50,11 @@ services.meshSidecar = {
 
 This project is in early development and is subject to significant changes:
 
-- The module interface may and probably will change without notice during early development
+- The module interface may and probably will change without notice
 - Not all mesh network types are fully implemented
 - Limited testing has been performed
-- Documentation is incomplete or nonexistent
-- There are many TODOs throughout the codebase
+- Documentation is incomplete or in progress
+- Many TODOs remain in the codebase
 
 ## Contributing
 
